@@ -185,7 +185,7 @@ export const useWhisper: UseWhisperHook = (config) => {
           }
           recorder.current = new RecordRTCPromisesHandler(
             stream.current,
-            recorderConfig
+            recorderConfig,
           )
         }
         if (!encoder.current) {
@@ -383,19 +383,25 @@ export const useWhisper: UseWhisperHook = (config) => {
           setTranscribing(true)
           let blob = await recorder.current.getBlob()
           if (removeSilence) {
-            const { createFFmpeg } = await import('@ffmpeg/ffmpeg')
-            const ffmpeg = createFFmpeg({
-              mainName: 'main',
-              corePath: ffmpegCoreUrl,
-              log: true,
-            })
-            if (!ffmpeg.isLoaded()) {
-              await ffmpeg.load()
+            const { FFmpeg } = await import('@ffmpeg/ffmpeg')
+            const ffmpeg = new FFmpeg()
+            if (!ffmpeg.loaded) {
+              await ffmpeg.load({
+                coreURL: ffmpegCoreUrl,
+                wasmURL: ffmpegCoreUrl.replace(
+                  'ffmpeg-core.js',
+                  'ffmpeg-core.wasm',
+                ),
+                workerURL: ffmpegCoreUrl.replace(
+                  'ffmpeg-core.js',
+                  'ffmpeg-core.worker.js',
+                ),
+              })
             }
             const buffer = await blob.arrayBuffer()
             console.log({ in: buffer.byteLength })
-            ffmpeg.FS('writeFile', 'in.wav', new Uint8Array(buffer))
-            await ffmpeg.run(
+            await ffmpeg.writeFile('in.wav', new Uint8Array(buffer))
+            await ffmpeg.exec([
               '-i', // Input
               'in.wav',
               '-acodec', // Audio codec
@@ -406,21 +412,23 @@ export const useWhisper: UseWhisperHook = (config) => {
               '44100',
               '-af', // Audio filter = remove silence from start to end with 2 seconds in between
               silenceRemoveCommand,
-              'out.mp3' // Output
-            )
-            const out = ffmpeg.FS('readFile', 'out.mp3')
-            console.log({ out: out.buffer.byteLength })
+              'out.mp3', // Output
+            ])
+            const outData = await ffmpeg.readFile('out.mp3')
+            const outBuffer =
+              outData instanceof Uint8Array ? outData : new Uint8Array(0)
+            console.log({ out: outBuffer.byteLength })
             // 225 seems to be empty mp3 file
-            if (out.length <= 225) {
-              ffmpeg.exit()
+            if (outBuffer.byteLength <= 225) {
+              await ffmpeg.terminate()
               setTranscript({
                 blob,
               })
               setTranscribing(false)
               return
             }
-            blob = new Blob([out.buffer], { type: 'audio/mpeg' })
-            ffmpeg.exit()
+            blob = new Blob([outBuffer], { type: 'audio/mpeg' })
+            await ffmpeg.terminate()
           } else {
             const buffer = await blob.arrayBuffer()
             console.log({ wav: buffer.byteLength })
@@ -524,7 +532,7 @@ export const useWhisper: UseWhisperHook = (config) => {
       })
       return response.data.text
     },
-    [apiKey, mode, whisperConfig]
+    [apiKey, mode, whisperConfig],
   )
 
   return {
